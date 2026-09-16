@@ -1,0 +1,56 @@
+# CD: only main, only via this pipeline, every deploy stamped with the commit SHA and announced in Feishu.
+name: Deploy
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: production
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: dist }
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: deployment
+        uses: actions/deploy-pages@v4
+      - name: Verify live SHA matches this commit
+        run: |
+          for i in $(seq 1 12); do
+            live=$(curl -sf "${{ steps.deployment.outputs.page_url }}version.json?t=$i" | node -pe 'JSON.parse(require("fs").readFileSync(0)).sha' || true)
+            [ "$live" = "$GITHUB_SHA" ] && echo "live sha ok: $live" && exit 0
+            echo "waiting for CDN... live=$live"; sleep 10
+          done
+          echo "live sha never matched $GITHUB_SHA"; exit 1
+      - name: Notify Feishu
+        if: always()
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then S=success; T="✅ 已上线：${{ github.repository }}"; else S=failure; T="❌ 上线失败：${{ github.repository }}"; fi
+          node scripts/notify-feishu.mjs "$S" "$T" \
+            "**提交**：\`${GITHUB_SHA:0:7}\` ${{ github.event.head_commit.message || '(manual)' }}
+          **作者**：${{ github.actor }}
+          **地址**：${{ steps.deployment.outputs.page_url }}
+          **流水线**：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

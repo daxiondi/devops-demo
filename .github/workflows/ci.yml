@@ -1,0 +1,28 @@
+# CI: runs on every PR and every push. Nothing merges to main unless this is green.
+name: CI
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - name: Notify Feishu on failure
+        if: failure()
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
+        run: |
+          node scripts/notify-feishu.mjs failure "❌ CI 失败：${{ github.repository }}" \
+            "**分支**：${{ github.head_ref || github.ref_name }}
+          **提交**：\`${GITHUB_SHA:0:7}\` by ${{ github.actor }}
+          **详情**：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
